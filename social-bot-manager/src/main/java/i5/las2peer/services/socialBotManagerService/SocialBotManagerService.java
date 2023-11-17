@@ -732,7 +732,12 @@ public class SocialBotManagerService extends RESTService {
 							messenger = m;
 						}
 					}
-					ChatMediator chat = bot.getMessenger(messenger).getChatMediator();
+					Messenger botMessenger = bot.getMessenger(messenger);
+					if (botMessenger == null) {
+						botMessenger = bot.getMessenger(ChatService.fromString(messenger));
+					}
+
+					ChatMediator chat = botMessenger.getChatMediator();
 
 					// send message
 					JSONObject chatBody = new JSONObject();
