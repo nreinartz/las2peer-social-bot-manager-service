@@ -1265,47 +1265,6 @@ public class SocialBotManagerService extends RESTService {
 
 			return Response.status(Status.NOT_FOUND).entity(bot + " not found.").build();
 		}
-
-		@POST
-		@Path("/events/telegram/{token}")
-		@Consumes(MediaType.APPLICATION_JSON)
-		@Produces(MediaType.TEXT_PLAIN)
-		@ApiOperation(value = "Receive an Telegram event")
-		@ApiResponses(value = { @ApiResponse(code = HttpURLConnection.HTTP_OK, message = "") })
-		public Response telegramEvent(String body, @PathParam("token") String token) {
-
-			new Thread(new Runnable() {
-				@Override
-				public void run() {
-
-					// Identify bot
-					Bot bot = null;
-
-					for (Bot b : getConfig().getBots().values()) {
-						if (b.getMessenger(ChatService.TELEGRAM) != null) {
-							bot = b;
-						}
-					}
-					if (bot == null)
-						System.out.println("cannot relate telegram event to a bot with token: " + token);
-					System.out.println("telegram event: bot identified: " + bot.getName());
-
-					// Handle event
-					Messenger messenger = bot.getMessenger(ChatService.TELEGRAM);
-					EventChatMediator mediator = (EventChatMediator) messenger.getChatMediator();
-					JSONParser jsonParser = new JSONParser(JSONParser.MODE_PERMISSIVE);
-					JSONObject parsedBody;
-					try {
-						parsedBody = (JSONObject) jsonParser.parse(body);
-						mediator.handleEvent(parsedBody);
-					} catch (ParseException e) {
-						e.printStackTrace();
-					}
-				}
-			}).start();
-
-			return Response.status(200).build();
-		}
 	}
 
 	public void checkRoutineTrigger(BotConfiguration botConfig, JSONObject j, BotAgent botAgent, String botFunctionId,
