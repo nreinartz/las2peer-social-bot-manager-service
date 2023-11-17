@@ -18,20 +18,20 @@ import org.apache.commons.io.IOUtils;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.pengrad.telegrambot.TelegramBot;
+import com.pengrad.telegrambot.UpdatesListener;
+import com.pengrad.telegrambot.model.CallbackQuery;
 import com.pengrad.telegrambot.model.File;
-import com.pengrad.telegrambot.model.request.ChatAction;
-import com.pengrad.telegrambot.model.request.ReplyKeyboardRemove;
-import com.pengrad.telegrambot.request.GetFile;
-import com.pengrad.telegrambot.request.GetMe;
-import com.pengrad.telegrambot.request.SendChatAction;
-import com.pengrad.telegrambot.request.SendDocument;
-import com.pengrad.telegrambot.request.SendMessage;
+import com.pengrad.telegrambot.model.Message;
+import com.pengrad.telegrambot.model.Update;
 import com.pengrad.telegrambot.response.BaseResponse;
 import com.pengrad.telegrambot.response.GetFileResponse;
 import com.pengrad.telegrambot.response.GetMeResponse;
+import com.pengrad.telegrambot.response.SendResponse;
 
 import i5.las2peer.connectors.webConnector.client.ClientResponse;
 import i5.las2peer.connectors.webConnector.client.MiniClient;
@@ -44,109 +44,100 @@ import net.minidev.json.JSONObject;
  * the sending of data to telegram channels.
  *
  */
-public class TelegramChatMediator extends EventChatMediator {
+public class TelegramChatMediator extends ChatMediator {
 
 	TelegramBot bot;
 	private TelegramMessageCollector messageCollector;
-	//private TelegramMessageCollector conversationPathCollector;
-
-	/**
-	 * URL address of the SBF manager service
-	 */
-	private String url;
+	// private TelegramMessageCollector conversationPathCollector;
 	MiniClient client;
 
-	public TelegramChatMediator(String authToken) throws AuthTokenException{
+	private static HashMap<String, TelegramChatMediator> botInstances = new HashMap<String, TelegramChatMediator>();
+
+	public TelegramChatMediator(String authToken) throws AuthTokenException {
 		super(authToken);
-		try{
+
+		// Apparently bot instances are not closed? But we need to disconnect updates
+		// handler
+		if (botInstances.containsKey(authToken)) {
+			TelegramChatMediator other = botInstances.get(authToken);
+			other.close();
+		}
+
+		try {
 			this.bot = new TelegramBot(authToken);
-		} catch (Exception e){
-			if(e.toString().toLowerCase().contains("404")){
+
+			this.bot.setUpdatesListener(updates -> {
+				updates.forEach(this::handleUpdate);
+				return UpdatesListener.CONFIRMED_UPDATES_ALL;
+			});
+
+			botInstances.put(authToken, this);
+		} catch (Exception e) {
+			if (e.toString().toLowerCase().contains("404")) {
 				throw new AuthTokenException("Authentication Token is faulty!");
-			} else throw e;
-			
+			} else
+				throw e;
+
 		}
 		this.client = new MiniClient();
 		client.setConnectorEndpoint("https://api.telegram.org/bot" + authToken);
 		messageCollector = new TelegramMessageCollector();
 	}
 
-	@Override
-	public Vector<ChatMessage> getMessages() {
-		return messageCollector.getMessages();
-	}
+	private void handleUpdate(Update update) {
+		System.out.println("update: " + update.toString());
 
-	/**
-	 * Handle incoming telegram event message.
-	 * 
-	 * @param event telegram event as json object
-	 * @see <a href="https://core.telegram.org/bots/api#getting-updates">Getting
-	 *      Telegram Updates</a>
-	 *
-	 */
-	@Override
-	public void handleEvent(JSONObject event) {
-		assert event != null : "jsonobject event parameter is null";
-
-		//System.out.println("event.toString: " + event.toString());
 		try {
-			String messageString = "";
-			String data = "";
+			String data = null;
+			Message message = update.message();
 			// check if a button click was detected
-			if(event.containsKey("callback_query")){
+			if (update.callbackQuery() != null) {
 				System.out.println("inside callback_query");
-				JSONObject callback_query = (JSONObject) event.get("callback_query");
-				messageString = callback_query.getAsString("message");
-				// the field data is defined when creating a button to identify the button that was clicked
-				data = callback_query.getAsString("data");
-			}
-			else if(event.containsKey("edited_message")){
+				CallbackQuery callback_query = update.callbackQuery();
+
+				message = callback_query.message();
+				data = callback_query.data();
+			} else if (update.editedMessage() != null) {
 				System.out.println("inside edited message");
-				messageString = event.getAsString("edited_message");
-			}
-			else{
-				messageString = event.get("message").toString();
+				message = update.editedMessage();
+			} else {
+				message = update.message();
 			}
 
-			JSONParser p = new JSONParser();
-			JSONObject message = (JSONObject) p.parse(messageString);
-			JSONObject chat = (JSONObject) message.get("chat");
-			JSONObject from = (JSONObject) message.get("from");
-			JSONObject document = (JSONObject) message.get("document");
-			JSONObject audio = (JSONObject) message.get("audio");
-			String channel = chat.getAsString("id");
-			String user = from.getAsString("first_name");
-			String text = message.getAsString("text");
-			String messageId = message.getAsString("message_id");
-			if(event.containsKey("callback_query")){
+			String channel = message.chat().id().toString();
+			String user = message.from().firstName();
+			String text = message.text();
+			String messageId = message.messageId().toString();
+			if (data != null) {
 				// the data field can be used to know which button was clicked
-				// (the text returned is not the text from the button, but the text above the button, therefore irrelevant)
+				// (the text returned is not the text from the button, but the text above the
+				// button, therefore irrelevant)
 				text = data;
 			}
 
-			String timestamp = message.getAsString("date");
+			String timestamp = message.date().toString();
 
-			if (channel == null || user == null || (text == null && document == null) || timestamp == null || messageId == null)
+			if (channel == null || user == null || (text == null && message.document() == null) || timestamp == null
+					|| messageId == null)
 				throw new InvalidChatMessageException("missing message fields");
 
 			this.showAction(channel, ChatAction.typing);
 
 			// message with document
-			if (document != null) {
-				String fileName = document.getAsString("file_name");
-				String mimeType = document.getAsString("mime_type");
-				String fileId = document.getAsString("file_id");
+			if (message.document() != null) {
+				String fileName = message.document().fileName();
+				String mimeType = message.document().mimeType();
+				String fileId = message.document().fileId();
 				String fileBody = getFile(fileId);
-				messageCollector
-						.addMessage(new ChatMessage(channel, user, text, timestamp, messageId, fileName, mimeType, fileBody));
-			}
-			else if(audio !=null){
-				String fileId = audio.getAsString("file_id");
-				String mimeType = audio.getAsString("mime_type");
+				messageCollector.addMessage(
+						new ChatMessage(channel, user, text, timestamp, messageId, fileName, mimeType, fileBody));
+			} else if (message.audio() != null) {
+				String fileId = message.audio().fileId();
+				String mimeType = message.audio().mimeType();
 				String fileBody = getFile(fileId);
-				messageCollector.addMessage(new ChatMessage(channel, user, text, timestamp, messageId, mimeType, fileBody));
-			}			
-			 else {
+				messageCollector.addMessage(
+						new ChatMessage(channel, user, text, timestamp, messageId, mimeType, fileBody));
+			} else {
 				messageCollector.addMessage(new ChatMessage(channel, user, text, timestamp, messageId));
 			}
 
@@ -155,31 +146,9 @@ public class TelegramChatMediator extends EventChatMediator {
 		}
 	}
 
-	/**
-	 * Registers to receive push notifications from telegram
-	 * 
-	 * @param url Address of bot url
-	 * @see <a href="https://core.telegram.org/bots/api#setwebhook">Setting Telegram
-	 *      Webhook</a>
-	 */
-	public void settingWebhook(String url) throws AuthTokenException{
-		System.out.println("poppo");
-		this.url = url;
-		assert url != null : "url not initialized";
-		assert !url.contentEquals("") : "empty url";
-
-		String path = "/sbfmanager/bots/events/telegram/";
-		if (url.endsWith("/sbfmanager")) {
-			path = "/bots/events/telegram/";
-		}
-
-		System.out.println("Setting Webhook");
-		ClientResponse result = client.sendRequest("GET", "setWebhook?url=" + url + path + super.authToken,
-				MediaType.TEXT_PLAIN);
-		if(result.getHttpCode() == 404){
-			throw new AuthTokenException("Authentication Token is faulty!");
-		}
-		System.out.println(result.getResponse());
+	@Override
+	public Vector<ChatMessage> getMessages() {
+		return messageCollector.getMessages();
 	}
 
 	public String getBotName() {
@@ -199,16 +168,24 @@ public class TelegramChatMediator extends EventChatMediator {
 	 * Sends a plain text message to telegram messenger channel
 	 */
 	@Override
-	public Boolean sendMessageToChannel(String channel, String text, HashMap<String, IncomingMessage> hashMap, String type, Optional<String> id) {
+	public Boolean sendMessageToChannel(String channel, String text, HashMap<String, IncomingMessage> hashMap,
+			String type, Optional<String> id) {
 
 		System.out.println("send plain message to telegram channel " + channel + ", size: " + text.length());
 		assert channel != null;
 		assert text != null;
 
-		SendMessage request = new SendMessage(channel, text);
-		BaseResponse res = bot.execute(request);
-		// Need to check response to confirm message was sent successfully
-		return Boolean.TRUE;
+		SendMessage baseMessageRequest = new SendMessage(channel, text);
+
+		if (bot.execute(baseMessageRequest.parseMode(ParseMode.MarkdownV2)).isOk()) {
+			return true;
+		} else if (bot.execute(baseMessageRequest.parseMode(ParseMode.Markdown)).isOk()) {
+			return true;
+		} else if (bot.execute(baseMessageRequest).isOk()) {
+			return true;
+		} else {
+			return false;
+		}
 	}
 
 	@Override
@@ -220,8 +197,7 @@ public class TelegramChatMediator extends EventChatMediator {
 		try {
 
 			Gson gson = new GsonBuilder().setPrettyPrinting().create();
-			JsonParser jp = new JsonParser();
-			JsonElement je = jp.parse(fileBody);
+			JsonElement je = JsonParser.parseString(fileBody);
 			fileBody = gson.toJson(je);
 			System.out.println(fileBody.substring(0, 160));
 
@@ -264,7 +240,7 @@ public class TelegramChatMediator extends EventChatMediator {
 
 	@Override
 	public void close() {
-
+		this.bot.removeGetUpdatesListener();
 	}
 
 	private String getFile(String fileId) {
@@ -290,18 +266,17 @@ public class TelegramChatMediator extends EventChatMediator {
 	}
 
 	@Override
-	public void sendBlocksMessageToChannel(String channel, String blocks, String authToken, HashMap<String, IncomingMessage> hashMap, Optional<String> id) {
+	public void sendBlocksMessageToChannel(String channel, String blocks, String authToken,
+			HashMap<String, IncomingMessage> hashMap, Optional<String> id) {
 
 		System.out.println("send interactive message to telegram channel " + channel);
 		assert channel != null;
 		assert blocks != null;
 
-		JSONParser p = new JSONParser();
-
-		try{
-			JSONObject blocksJO = (JSONObject) p.parse(blocks);
-			String text = blocksJO.getAsString("text");
-			String inline_keyboard = blocksJO.getAsString("inline_keyboard");
+		try {
+			JsonObject blocksJO = JsonParser.parseString(blocks).getAsJsonObject();
+			String text = blocksJO.get("text").getAsString();
+			String inline_keyboard = blocksJO.get("inline_keyboard").getAsString();
 
 			InlineKeyboardMarkup markup = parseInlineKeyboardMarkup(inline_keyboard);
 
@@ -309,13 +284,14 @@ public class TelegramChatMediator extends EventChatMediator {
 			request.replyMarkup(markup);
 
 			BaseResponse res = bot.execute(request);
-		} catch(Exception e){
+		} catch (Exception e) {
 			e.printStackTrace();
 		}
 
 	}
 
-	public void updateBlocksMessageToChannel(String channel, String blocks, String authToken, String ts, Optional<String> id){
+	public void updateBlocksMessageToChannel(String channel, String blocks, String authToken, String ts,
+			Optional<String> id) {
 
 	}
 
@@ -324,20 +300,19 @@ public class TelegramChatMediator extends EventChatMediator {
 		super.updateBlocksMessageToChannel(channel, blocks, authToken, ts);
 	}
 
-	private InlineKeyboardMarkup parseInlineKeyboardMarkup(String blocks){
-		JSONParser p = new JSONParser();
-		try{
-			JSONArray blocksJA = (JSONArray) p.parse(blocks);
+	private InlineKeyboardMarkup parseInlineKeyboardMarkup(String blocks) {
+		try {
+			JsonArray blocksJA = JsonParser.parseString(blocks).getAsJsonArray();
 
 			InlineKeyboardButton[][] allButtons = new InlineKeyboardButton[blocksJA.size()][];
 
 			int i = 0;
-			for(Object o : blocksJA){
+			for (Object o : blocksJA) {
 				JSONArray currO = (JSONArray) o;
 				InlineKeyboardButton[] currButtons = new InlineKeyboardButton[currO.size()];
 
 				int x = 0;
-				for(Object so : currO){
+				for (Object so : currO) {
 					JSONObject currSO = (JSONObject) so;
 					String text = currSO.getAsString("text");
 					// currently used, since passed on unicodes get parsed wrong
@@ -345,7 +320,7 @@ public class TelegramChatMediator extends EventChatMediator {
 					text = text.replaceAll(":check:", "\u2713");
 					InlineKeyboardButton button = new InlineKeyboardButton(text);
 					button.callbackData(currSO.getAsString("callback_data"));
-					if(currSO.containsKey("url")){
+					if (currSO.containsKey("url")) {
 						button.url(currSO.getAsString("url"));
 					}
 					currButtons[x] = button;
@@ -358,7 +333,7 @@ public class TelegramChatMediator extends EventChatMediator {
 
 			InlineKeyboardMarkup markup = new InlineKeyboardMarkup(allButtons);
 			return markup;
-		} catch (Exception e){
+		} catch (Exception e) {
 			e.printStackTrace();
 			return null;
 		}
@@ -368,15 +343,15 @@ public class TelegramChatMediator extends EventChatMediator {
 
 		System.out.println("editing telegram message with id " + messageId + " and new message text " + message);
 
-		try{
+		try {
 			JSONParser p = new JSONParser();
 			JSONObject messageTextJO = (JSONObject) p.parse(message);
 			String text = messageTextJO.getAsString("text");
 
 			String inline_keyboard = "";
-			try{
+			try {
 				inline_keyboard = messageTextJO.getAsString("inline_keyboard");
-			} catch (Exception ex){
+			} catch (Exception ex) {
 				// create empty inline keyboard
 				inline_keyboard = "[[]]";
 			}
@@ -391,7 +366,7 @@ public class TelegramChatMediator extends EventChatMediator {
 
 			BaseResponse res = bot.execute(request);
 			System.out.println("res: " + String.valueOf(res.isOk()) + " " + res.errorCode() + " " + res.description());
-		} catch(Exception e){
+		} catch (Exception e) {
 			System.out.println("editing message did not work");
 			e.printStackTrace();
 		}
